@@ -33,7 +33,7 @@ pip install -r requirements.txt
 pytest tests/ -v
 ```
 
-The test suite (48 tests) mocks Docker and Claude, so it runs without either installed.
+The test suite (50 tests) mocks Docker and Claude, so it runs without either installed.
 
 ### Run against the broken fixture
 ```bash

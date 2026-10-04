@@ -1,7 +1,7 @@
 # Building a Self-Healing Docker CI/CD Gatekeeper with Claude Code and the Docker SDK
 
 > **Source code:** [github.com/SivaSaiKrishnaSuryadevara/docker-ci-gatekeeper](https://github.com/SivaSaiKrishnaSuryadevara/docker-ci-gatekeeper)
-> One Python file (`gatekeeper.py`), one deliberately broken Dockerfile, and 46 pytest tests that run on Python 3.10 through 3.13 in CI.
+> One Python file (`gatekeeper.py`), one deliberately broken Dockerfile, and 50 pytest tests that run on Python 3.10 through 3.13 in CI.
 
 Here is the build failure I designed this project around. It's a two-stage Python image. The `builder` stage compiles wheels, and the `runtime` stage installs them as a non-root user. Line 20 of the Dockerfile reads:
 
@@ -112,38 +112,48 @@ The docker-py build path does still exist as `--backend docker-py`, for runners 
 
 ## Decision 2: Turn the log into a typed failure before anyone reads it
 
-A raw build log is the wrong thing to send to a language model. It's long, most of it is irrelevant, and the relevant part is spread across three places. Here's the shape of BuildKit's plain output for the line-20 failure, abridged. It's the same text the test suite uses as its fixture:
+A raw build log is the wrong thing to send to a language model. It's long, most of it is irrelevant, and the relevant part is spread across several places. This is the real `docker build --progress=plain` output for the line-20 failure, captured on Docker 29.5.2 with buildx 0.37.2 under Colima (trimmed to the last cached step and the failure):
 
 ```text
-#7 [builder 3/4] RUN --mount=type=cache,target=/root/.cache/pip     pip install --upgrade pip wheel
-#7 CACHED
+#8 [builder 3/4] RUN --mount=type=cache,target=/root/.cache/pip     pip install --upgrade pip wheel
+#8 CACHED
 
-#8 [builder 4/4] RUN pip wheel --no-cache-dirs --wheel-dir /wheels requests==2.32.3
-#8 0.412 Usage:
-#8 0.412   pip wheel [options] <requirement specifier> ...
-#8 0.412
-#8 0.412 no such option: --no-cache-dirs
-#8 ERROR: process "/bin/sh -c pip wheel --no-cache-dirs ..." did not complete successfully: exit code: 2
+#9 [builder 4/4] RUN pip wheel --no-cache-dirs --wheel-dir /wheels requests==2.32.3
+#9 0.146 
+#9 0.146 Usage:   
+#9 0.146   pip wheel [options] <requirement specifier> ...
+#9 0.146   pip wheel [options] -r <requirements file> ...
+#9 0.146   pip wheel [options] [-e] <vcs project url> ...
+#9 0.146   pip wheel [options] [-e] <local project path> ...
+#9 0.146   pip wheel [options] <archive url/path> ...
+#9 0.146 
+#9 0.146 no such option: --no-cache-dirs
+#9 ERROR: process "/bin/sh -c pip wheel --no-cache-dirs --wheel-dir /wheels requests==2.32.3" did not complete successfully: exit code: 2
 ------
-Dockerfile.broken:20
---------------------
-  19 |     # BROKEN: invalid pip flag (should be --no-cache-dir)
-  20 | >>> RUN pip wheel --no-cache-dirs --wheel-dir /wheels requests==2.32.3
-  21 |
---------------------
-ERROR: failed to solve: process "/bin/sh -c pip wheel --no-cache-dirs ..." did not complete successfully: exit code: 2
+ > [builder 4/4] RUN pip wheel --no-cache-dirs --wheel-dir /wheels requests==2.32.3:
+0.146 no such option: --no-cache-dirs
+------
+ERROR: failed to build: failed to solve: process "/bin/sh -c pip wheel --no-cache-dirs --wheel-dir /wheels requests==2.32.3" did not complete successfully: exit code: 2
 ```
 
-Every BuildKit step has a numeric ID, and every line it prints is prefixed with `#<id>`. The step header carries the stage name and position (`[builder 4/4]`). The first `#<id> ERROR:` line identifies which step failed. After the step output, BuildKit prints `<file>:<line>` followed by a dashed snippet with `>>>` on the failing line. `parse_buildkit_log` reads all three:
+Every BuildKit step has a numeric ID, and every line it prints is prefixed with `#<id>`. The step header carries the stage name and position (`[builder 4/4]`). The first `#<id> ERROR:` line identifies which step failed. `parse_buildkit_log` keys everything off those two patterns:
 
 ```python
 STEP_HEADER_RE = re.compile(r"^#(?P<id>\d+) \[(?:(?P<stage>[^\s\]]+) )?(?P<pos>\d+/\d+)\] (?P<instr>.+)$")
 STEP_LINE_RE = re.compile(r"^#(?P<id>\d+) (?:\d+\.\d+(?: |$))?(?P<text>.*)$")
 ```
 
-Output is grouped by step ID, so the `CACHED` lines from step 7 and the context-transfer noise from step 1 never end up in the failure record. Only step 8's output does. If the snippet block is missing (some failures don't print one), the parser falls back to finding the failing instruction text in the Dockerfile itself. It uses a small indexer that joins `\` continuation lines and tracks which `FROM ... AS <stage>` each instruction belongs to.
+Output is grouped by step ID, so the `CACHED` lines from step 8 and the context-transfer noise from steps 1 to 5 never end up in the failure record. Only step 9's output does.
 
-For the fixture, the result is this record. The values are exactly what `test_invalid_pip_flag_extracts_instruction_line_stage` asserts:
+The real log taught me two things the fixture I wrote from memory had wrong. Some BuildKit versions follow the failure with a `Dockerfile:<line>` header and a source snippet that marks the failing line with `>>>`. This Docker version printed no snippet at all. And the final line now starts with `ERROR: failed to build: failed to solve:` rather than `ERROR: failed to solve:`. The parser handles both. When a snippet is present, it reads the line number from it. When it isn't, it finds the failing instruction's text in the Dockerfile with a small indexer that joins `\` continuation lines and tracks which `FROM ... AS <stage>` each instruction belongs to. The final-line check accepts either prefix:
+
+```python
+FINAL_ERROR_RE = re.compile(r"^ERROR: (?:failed to build: )?failed to solve")
+```
+
+The captured log is checked into `tests/fixtures/` and parsed by `test_real_docker29_log_without_snippet_block`, next to the older snippet-format fixture, so both formats stay covered.
+
+For both log formats the result is the same record. These are the values the tests assert:
 
 ```python
 BuildFailure(
@@ -216,6 +226,27 @@ with tempfile.TemporaryDirectory(prefix="gatekeeper-claude-") as scratch:
 The empty working directory is a deliberate containment choice. In `-p` mode nobody is present to approve file edits, and I don't want Claude editing the repository directly anyway. The gatekeeper owns every write. Running from a scratch directory means the model's only output channel is stdout, which then goes through the sanitizer. A non-zero exit or a timeout raises `GatekeeperError` (exit 2), the same as a missing daemon.
 
 The binary path is configurable with `--claude-bin` or the `CLAUDE_BIN` environment variable. That matters on machines where Claude Code is installed somewhere other than `PATH`, such as inside an editor extension. On a CI runner, Claude Code must be installed and authenticated before the gatekeeper can call it.
+
+The model is configurable too, with `--model` or `GATEKEEPER_MODEL`, and I added that only after my first real run failed. My Claude Code default model was one that print mode refused without extra usage credits. `claude -p` exited 1 with an empty stderr, so the gatekeeper's error read `claude -p exited 1:` and nothing else. The explanation was on stdout:
+
+```text
+Fable 5.1 requires usage credits. Switch to another model, or manage usage credits at claude.ai/settings/usage?from=cc_cli_limit_message, to continue.
+```
+
+Two fixes came out of that. The error path now falls back to stdout when stderr is empty, and `--model` is passed straight through to `claude --model`:
+
+```python
+cmd = [self.claude_bin, "-p", prompt, "--output-format", "text"]
+if self.model:
+    cmd += ["--model", self.model]
+...
+if proc.returncode != 0:
+    # Print mode reports some errors (auth, usage limits) on stdout, not stderr.
+    detail = (proc.stderr or "").strip() or (proc.stdout or "").strip()
+    raise GatekeeperError(f"claude -p exited {proc.returncode}: {detail[:500]}")
+```
+
+Pinning the model in CI is a good idea regardless. The interactive default on a developer's machine is whatever they picked last, and a pipeline shouldn't inherit that.
 
 ## Decision 4: Sanitize the patch without destroying the Dockerfile
 
@@ -339,7 +370,7 @@ One caveat I hit while writing this: BuildKit supports per-Dockerfile ignore fil
 
 ## Testing it without Docker or a model
 
-The suite has 46 tests and needs neither Docker nor Claude. The build backend and Claude are replaced with small fakes that follow the same interfaces:
+The suite has 50 tests and needs neither Docker nor Claude. The build backend and Claude are replaced with small fakes that follow the same interfaces:
 
 ```python
 class FakeBackend:
@@ -364,14 +395,14 @@ The suite is split into the three guarantees the gatekeeper makes:
 
 | Group | Tests | What it proves |
 |---|---|---|
-| `TestBuildKitParser` | 17 | Categories for invalid flags, repo signatures, EOL repos, missing apt and pip packages, network failures, cache mounts, missing COPY sources; line, stage, and step extraction; ANSI/CRLF tolerance; legacy-builder logs |
+| `TestBuildKitParser` | 19 | Categories for invalid flags, repo signatures, EOL repos, missing apt and pip packages, network failures, cache mounts, missing COPY sources; line, stage, and step extraction; ANSI/CRLF tolerance; legacy-builder logs; a real Docker 29 log |
 | `TestPatchSanitization` | 16 | Fenced and bare diffs, wrong hunk offsets, full-file responses, `# syntax=` restoration, dropped-comment reporting, and seven classes of rejected response |
-| `TestRetryCap` + `TestClaudeCli` | 13 | The two-call ceiling, early stops, exit codes 1 and 2, prompt contents, and the `claude -p` invocation |
+| `TestRetryCap` + `TestClaudeCli` | 15 | The two-call ceiling, early stops, exit codes 1 and 2, prompt contents, the `claude -p` invocation, `--model`, and stdout-only errors |
 
 ```text
 $ pytest tests/ -v
 ...
-============================== 46 passed in 0.08s ==============================
+============================== 50 passed in 0.11s ==============================
 ```
 
 GitHub Actions runs the same suite on Python 3.10, 3.11, 3.12, and 3.13 on every push.
@@ -386,7 +417,7 @@ pip install -r requirements.txt
 
 # Build, diagnose, and attempt up to two fixes. The original file is untouched;
 # a passing fix is left in Dockerfile.broken.gatekeeper.
-python gatekeeper.py -f Dockerfile.broken . --claude-bin "$(command -v claude)"
+python gatekeeper.py -f Dockerfile.broken . --claude-bin "$(command -v claude)" --model sonnet
 
 # Same, with the full report (each attempt's failure record and diff) as JSON.
 python gatekeeper.py -f Dockerfile.broken . --json
@@ -401,9 +432,50 @@ python gatekeeper.py -f Dockerfile.broken . --in-place
 | `1` | Still failing after the attempts allowed | Fail the job; the report shows what was tried |
 | `2` | Environment problem: no Dockerfile, no daemon, no `claude`, timeout | Fail the job as infrastructure, not code |
 
+## A real run
+
+With Docker running under Colima (Docker 29.5.2, buildx 0.37.2, a 4-CPU VM) and Sonnet as the model, this is the complete console output:
+
+```text
+$ python gatekeeper.py -f Dockerfile.broken . --claude-bin "$CLAUDE" --model sonnet
+INFO Build failed (invalid_command_flag at line 20); asking Claude for a fix (1/2)
+patched Dockerfile written to Dockerfile.broken.gatekeeper
+attempt 0: FAIL [invalid_command_flag] line 20: no such option: --no-cache-dirs
+attempt 1: PASS
+result: PASS (passed, 1 Claude call(s))
+$ echo $?
+0
+```
+
+The whole run took about 12 seconds with the base image already pulled. Status and results go to stdout, and log lines and the staging-file notice go to stderr, so `--json` output stays clean for a pipeline to parse.
+
+Claude's change, from `diff -u Dockerfile.broken Dockerfile.broken.gatekeeper`, was one character:
+
+```diff
+@@ -17,7 +17,7 @@
+     pip install --upgrade pip wheel
+ 
+ # BROKEN: invalid pip flag (should be --no-cache-dir)
+-RUN pip wheel --no-cache-dirs --wheel-dir /wheels requests==2.32.3
++RUN pip wheel --no-cache-dir --wheel-dir /wheels requests==2.32.3
+ 
+ # ---- runtime: install prebuilt wheels only ---------------------------------
+ FROM python:${PYTHON_VERSION}-slim AS runtime
+```
+
+The `# syntax=` directive, every comment, the cache mount, and both stage names came through untouched, and `dropped_comments` was empty. `Dockerfile.broken` itself was not modified, because I didn't pass `--in-place`. The rebuilt image runs:
+
+```text
+$ docker run --rm gatekeeper-build:latest
+2.32.3
+```
+
+That's one fixture and one model, so it shows the loop works, not that it fixes every failure. But every boundary in it is real: a live daemon, a real BuildKit log, a real model response, and a real rebuild.
+
 ## What I'd be careful about
 
-- **The end-to-end path depends on the environment.** The unit tests prove the parser, sanitizer, cap, and staging logic. They don't prove that a given Claude response fixes a given real build. That only shows up when the gatekeeper runs against a live daemon, which is exactly what the rebuild step is for. Treat a passing rebuild as the evidence, not the model's confidence.
+- **One real run is one data point.** The unit tests prove the parser, sanitizer, cap, and staging logic, and the run above proves the loop closes on a live daemon. Neither proves that Claude will fix *your* failure. That's what the rebuild step is for: treat a passing rebuild as the evidence, not the model's confidence.
+- **Log formats move.** The Docker 29 log above already differed from what I expected, in two places. Capture a real failing log from your own Docker version, drop it in `tests/fixtures/`, and assert on it.
 - **"Passes" is not "correct."** A rebuild that exits 0 proves the image builds. It doesn't prove the image works. Keeping fixes in a staging file for review exists for that gap.
 - **The taxonomy is regex, and regexes drift.** BuildKit and package managers reword their errors over time. An unknown message degrades to `COMMAND_FAILED` or `UNKNOWN`, which still produces a usable prompt, just a less specific one. When a category starts missing, add the new phrasing and a test with the real log line.
 - **Don't let the gatekeeper hide flakiness.** A `NETWORK` failure isn't something a Dockerfile edit should fix. If your registry or mirror is flaky, a model may "fix" it by pinning a different mirror. The category in the report makes that easy to spot. Whether to skip the model for that category is a policy decision I've left to the pipeline.
