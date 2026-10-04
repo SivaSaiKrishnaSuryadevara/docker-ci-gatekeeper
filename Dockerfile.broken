@@ -1,0 +1,29 @@
+# syntax=docker/dockerfile:1.7
+# Test fixture for gatekeeper.py: a multi-stage build that fails
+# deterministically in the builder stage.
+#
+# The bug: `--no-cache-dirs` is not a pip option (the real flag is
+# `--no-cache-dir`). pip exits 2 with "no such option: --no-cache-dirs",
+# which BuildKit reports as a failed RUN in stage "builder".
+
+ARG PYTHON_VERSION=3.12
+
+# ---- builder: resolve and build wheels -------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS builder
+WORKDIR /build
+
+# Keep the pip cache in a BuildKit cache mount so rebuilds stay fast.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade pip wheel
+
+# BROKEN: invalid pip flag (should be --no-cache-dir)
+RUN pip wheel --no-cache-dirs --wheel-dir /wheels requests==2.32.3
+
+# ---- runtime: install prebuilt wheels only ---------------------------------
+FROM python:${PYTHON_VERSION}-slim AS runtime
+# Non-root runtime user
+RUN useradd --create-home --uid 10001 app
+COPY --from=builder /wheels /wheels
+RUN pip install --no-cache-dir --no-index --find-links=/wheels requests && rm -rf /wheels
+USER app
+CMD ["python", "-c", "import requests; print(requests.__version__)"]
