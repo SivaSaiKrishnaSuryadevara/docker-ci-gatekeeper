@@ -398,24 +398,26 @@ class DockerPyBackend:
 # =============================================================================
 
 class ClaudeCli:
-    def __init__(self, claude_bin: str = "claude", timeout: int = 300):
-        self.claude_bin, self.timeout = claude_bin, timeout
+    def __init__(self, claude_bin: str = "claude", timeout: int = 300, model: str | None = None):
+        self.claude_bin, self.timeout, self.model = claude_bin, timeout, model
 
     def propose_fix(self, prompt: str) -> str:
         if shutil.which(self.claude_bin) is None and not Path(self.claude_bin).is_file():
             raise GatekeeperError(f"Claude Code CLI '{self.claude_bin}' not found (pass --claude-bin)")
         # Run from an empty scratch dir: print mode can't get edit permissions
         # approved anyway, and this way there's nothing in its cwd to touch.
+        cmd = [self.claude_bin, "-p", prompt, "--output-format", "text"]
+        if self.model:
+            cmd += ["--model", self.model]
         with tempfile.TemporaryDirectory(prefix="gatekeeper-claude-") as scratch:
             try:
-                proc = subprocess.run(
-                    [self.claude_bin, "-p", prompt, "--output-format", "text"],
-                    capture_output=True, text=True, timeout=self.timeout, cwd=scratch,
-                )
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=self.timeout, cwd=scratch)
             except subprocess.TimeoutExpired as exc:
                 raise GatekeeperError(f"claude -p timed out after {self.timeout}s") from exc
         if proc.returncode != 0:
-            raise GatekeeperError(f"claude -p exited {proc.returncode}: {proc.stderr.strip()[:500]}")
+            # Print mode reports some errors (auth, usage limits) on stdout, not stderr.
+            detail = (proc.stderr or "").strip() or (proc.stdout or "").strip()
+            raise GatekeeperError(f"claude -p exited {proc.returncode}: {detail[:500]}")
         return proc.stdout
 
 
@@ -676,6 +678,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--backend", choices=["buildkit", "docker-py"], default="buildkit")
     parser.add_argument("--max-retries", type=int, default=MAX_RETRIES, help=f"Claude fix attempts (hard cap {MAX_RETRIES})")
     parser.add_argument("--claude-bin", default=os.environ.get("CLAUDE_BIN", "claude"))
+    parser.add_argument("--model", default=os.environ.get("GATEKEEPER_MODEL"),
+                        help="Model passed to claude --model (default: Claude Code's configured model)")
     parser.add_argument("--in-place", action="store_true", help="Overwrite the Dockerfile once a patched build passes")
     parser.add_argument("--json", action="store_true", help="Print the full report as JSON")
     parser.add_argument("-v", "--verbose", action="store_true")
@@ -691,7 +695,7 @@ def main(argv: list[str] | None = None) -> int:
         preflight_daemon()
         backend: BuildBackend = BuildKitCliBackend() if args.backend == "buildkit" else DockerPyBackend()
         report = run_gatekeeper(
-            dockerfile, context, backend, ClaudeCli(args.claude_bin),
+            dockerfile, context, backend, ClaudeCli(args.claude_bin, model=args.model),
             tag=args.tag, max_retries=args.max_retries, in_place=args.in_place,
         )
     except GatekeeperError as exc:

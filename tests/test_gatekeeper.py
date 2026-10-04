@@ -428,7 +428,7 @@ class TestRetryCap:
     def test_main_exits_1_when_retries_exhausted(self, dockerfile, monkeypatch, capsys):
         monkeypatch.setattr(gk, "preflight_daemon", lambda: None)
         monkeypatch.setattr(gk, "BuildKitCliBackend", lambda: FakeBackend())
-        monkeypatch.setattr(gk, "ClaudeCli", lambda _bin: FakeClaude())
+        monkeypatch.setattr(gk, "ClaudeCli", lambda _bin, **_kw: FakeClaude())
         code = gk.main(["-f", str(dockerfile), str(dockerfile.parent)])
         assert code == 1
         assert "2 Claude call(s)" in capsys.readouterr().out
@@ -462,3 +462,21 @@ class TestClaudeCli:
              mock.patch.object(gk.subprocess, "run", return_value=proc):
             with pytest.raises(gk.GatekeeperError, match="Invalid API key"):
                 gk.ClaudeCli().propose_fix("x")
+
+    def test_error_reported_on_stdout_is_surfaced(self):
+        # Print mode reports usage-limit and auth errors on stdout with an empty stderr.
+        msg = "Fable 5.1 requires usage credits. Switch to another model"
+        proc = subprocess.CompletedProcess(args=[], returncode=1, stdout=msg, stderr="")
+        with mock.patch.object(gk.shutil, "which", return_value="/x/claude"), \
+             mock.patch.object(gk.subprocess, "run", return_value=proc):
+            with pytest.raises(gk.GatekeeperError, match="requires usage credits"):
+                gk.ClaudeCli().propose_fix("x")
+
+    def test_model_flag_is_passed_through(self):
+        proc = subprocess.CompletedProcess(args=[], returncode=0, stdout="ok", stderr="")
+        with mock.patch.object(gk.shutil, "which", return_value="/x/claude"), \
+             mock.patch.object(gk.subprocess, "run", return_value=proc) as run:
+            gk.ClaudeCli(model="sonnet").propose_fix("x")
+            assert run.call_args.args[0][-2:] == ["--model", "sonnet"]
+            gk.ClaudeCli().propose_fix("x")
+            assert "--model" not in run.call_args.args[0]
