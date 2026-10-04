@@ -1,0 +1,54 @@
+#0 building with "colima" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile.broken
+#1 transferring dockerfile: 1.23kB done
+#1 DONE 0.0s
+
+#2 resolve image config for docker-image://docker.io/docker/dockerfile:1.7
+#2 DONE 0.1s
+
+#3 docker-image://docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+#3 resolve docker.io/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e done
+#3 CACHED
+
+#4 [internal] load metadata for docker.io/library/python:3.12-slim
+#4 DONE 0.1s
+
+#5 [internal] load .dockerignore
+#5 transferring context: 2B done
+#5 DONE 0.0s
+
+#6 [builder 1/4] FROM docker.io/library/python:3.12-slim@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d
+#6 resolve docker.io/library/python:3.12-slim@sha256:02108f5d322dd89f1c9e552442c25acb0543dfdbc455693a5599624f20d9155d 0.0s done
+#6 DONE 0.0s
+
+#7 [builder 2/4] WORKDIR /build
+#7 CACHED
+
+#8 [builder 3/4] RUN --mount=type=cache,target=/root/.cache/pip     pip install --upgrade pip wheel
+#8 CACHED
+
+#9 [builder 4/4] RUN pip wheel --no-cache-dirs --wheel-dir /wheels requests==2.32.3
+#9 0.146 
+#9 0.146 Usage:   
+#9 0.146   pip wheel [options] <requirement specifier> ...
+#9 0.146   pip wheel [options] -r <requirements file> ...
+#9 0.146   pip wheel [options] [-e] <vcs project url> ...
+#9 0.146   pip wheel [options] [-e] <local project path> ...
+#9 0.146   pip wheel [options] <archive url/path> ...
+#9 0.146 
+#9 0.146 no such option: --no-cache-dirs
+#9 ERROR: process "/bin/sh -c pip wheel --no-cache-dirs --wheel-dir /wheels requests==2.32.3" did not complete successfully: exit code: 2
+------
+ > [builder 4/4] RUN pip wheel --no-cache-dirs --wheel-dir /wheels requests==2.32.3:
+0.146 
+0.146 Usage:   
+0.146   pip wheel [options] <requirement specifier> ...
+0.146   pip wheel [options] -r <requirements file> ...
+0.146   pip wheel [options] [-e] <vcs project url> ...
+0.146   pip wheel [options] [-e] <local project path> ...
+0.146   pip wheel [options] <archive url/path> ...
+0.146 
+0.146 no such option: --no-cache-dirs
+------
+ERROR: failed to build: failed to solve: process "/bin/sh -c pip wheel --no-cache-dirs --wheel-dir /wheels requests==2.32.3" did not complete successfully: exit code: 2

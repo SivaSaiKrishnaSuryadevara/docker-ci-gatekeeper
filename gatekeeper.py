@@ -224,6 +224,7 @@ def _best_message(lines: list[str], fallback: str) -> str:
 STEP_HEADER_RE = re.compile(r"^#(?P<id>\d+) \[(?:(?P<stage>[^\s\]]+) )?(?P<pos>\d+/\d+)\] (?P<instr>.+)$")
 STEP_LINE_RE = re.compile(r"^#(?P<id>\d+) (?:\d+\.\d+(?: |$))?(?P<text>.*)$")
 SNIPPET_LINE_RE = re.compile(r"^\s*(?P<num>\d+) \|( >>>)?\s?(?P<code>.*)$")
+FINAL_ERROR_RE = re.compile(r"^ERROR: (?:failed to build: )?failed to solve")
 EXIT_CODE_RE = re.compile(r"exit code: (\d+)|returned a non-zero code: (\d+)")
 
 
@@ -259,7 +260,8 @@ def parse_buildkit_log(log_text: str, dockerfile_text: str) -> BuildFailure:
                     break
                 snippet.append(sn)
             break
-    if final := next((ln for ln in lines if ln.startswith("ERROR: failed to solve")), None):
+    # Older buildx: "ERROR: failed to solve: ...". Docker 29 / buildx 0.37: "ERROR: failed to build: failed to solve: ...".
+    if final := next((ln for ln in lines if FINAL_ERROR_RE.match(ln)), None):
         error_line = final
 
     header = headers.get(failing_id) if failing_id else None

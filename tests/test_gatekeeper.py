@@ -202,6 +202,23 @@ class TestBuildKitParser:
         assert f.stage == "builder"
         assert f.exit_code == 2
 
+    def test_real_docker29_log_without_snippet_block(self):
+        # Captured from `docker build --progress=plain` on Docker 29.5.2 / buildx 0.37.2 (Colima).
+        # This version prints no ">>>" snippet block and prefixes the final line with "failed to build:".
+        log = (ROOT / "tests" / "fixtures" / "buildkit_invalid_flag_docker29.log").read_text()
+        f = gk.parse_buildkit_log(log, BROKEN)
+        assert f.category is FailureCategory.INVALID_FLAG
+        assert f.message == "no such option: --no-cache-dirs"
+        assert f.instruction == BROKEN_RUN
+        assert f.dockerfile_line == 20  # recovered from the instruction text, not a snippet
+        assert (f.stage, f.step, f.exit_code) == ("builder", "4/4", 2)
+        assert f.snippet == []
+        assert not any("CACHED" in ln for ln in f.step_output)
+
+    def test_final_error_line_matches_both_buildx_formats(self):
+        assert gk.FINAL_ERROR_RE.match("ERROR: failed to solve: process ...")
+        assert gk.FINAL_ERROR_RE.match("ERROR: failed to build: failed to solve: process ...")
+
     def test_dockerfile_index_handles_continuations_and_stages(self):
         idx = gk.index_dockerfile(BROKEN)
         mount = next(i for i in idx if "--mount" in i.text)
