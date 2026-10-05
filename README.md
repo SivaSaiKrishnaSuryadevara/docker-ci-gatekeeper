@@ -69,9 +69,13 @@ python gatekeeper.py -f Dockerfile.broken . --in-place
 
 docker-py can't run BuildKit builds (it doesn't implement BuildKit's session protocol), so the default backend shells out to `docker build --progress=plain`. docker-py is still used for the daemon health check before any build starts.
 
-## Write-up
+## Architecture
 
-The design decisions behind the gatekeeper are covered in [ARTICLE.md](ARTICLE.md).
+The state machine, failure taxonomy, retry ceiling, patch sanitizer, and staging model are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Deep Dive & Publications
+
+An in-depth implementation tutorial is currently under editorial review for DZone. Link will be posted upon publication.
 
 ## License
 

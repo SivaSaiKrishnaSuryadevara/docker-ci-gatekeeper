@@ -4,3 +4,5 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 *.gatekeeper
+ARTICLE.md
+*.article.md
